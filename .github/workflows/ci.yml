@@ -20,3 +20,5 @@ jobs:
       # 不能写 glob 也不能写目录：Node 20 的 --test 不展开通配符（报 Could not find），
       # Node 22 会把目录当成文件（MODULE_NOT_FOUND）。不带参数让测试运行器自己发现。
       - run: node --test
+      # 打包内容也跟着查一遍：files 里漏一项，安装后就会缺文件（README/CHANGELOG 之类）。
+      - run: npm pack --dry-run

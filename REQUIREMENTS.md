@@ -1,6 +1,7 @@
-# dsh-workbuddy2api-panel 需求文档（待评审）
+# dsh-workbuddy2api-panel 需求文档（已实现，1.0.0）
 
-> 状态：**草稿，未实现**。评审通过后才动工。
+> 状态：**已实现并随 1.0.0 发布**（历史文档，保留原始需求与取舍记录；实际行为以 README 与代码为准）。
+> 一期交付后另有 [REQUIREMENTS-M2.md](./REQUIREMENTS-M2.md)（M2/M3）与 [CHANGELOG.md](./CHANGELOG.md)。
 
 ## 1. 背景与痛点
 

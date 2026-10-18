@@ -1,6 +1,7 @@
 # dsh-workbuddy2api-panel
 
 [![ci](https://github.com/jerry9692/dsh-workbuddy2api-panel/actions/workflows/ci.yml/badge.svg)](https://github.com/jerry9692/dsh-workbuddy2api-panel/actions/workflows/ci.yml)
+![Version](https://img.shields.io/badge/version-1.0.0-blue)
 ![Node](https://img.shields.io/badge/node-20%20%7C%2022%20%7C%2024-brightgreen)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 
@@ -15,6 +16,7 @@
 | 适用面板 | [workbuddy2api-panel](https://github.com/linguo2625469/workbuddy2api-panel) `1.13.0-panel`（实测通过）；接口见下文「依赖的面板接口」，面板改字段这里要跟着改 |
 | 适用 DSH | `@deepseek-ai/dsh-desktop-runtime` `0.2.0-rc.2`（`llm-pi-ai` / `dsh-settings` / `dsh-credentials` 都按这个版本对过） |
 | 与本项目的关系 | 这是个**客户端插件**，不修改、不代理面板本身；它只读面板的 HTTP 接口，把结果写进 DSH 自己的 `llm-pi-ai` 配置 |
+| 当前版本 | `1.0.0`（首个稳定版，变更历史见 [CHANGELOG.md](CHANGELOG.md)，兼容承诺见下文「稳定版承诺」） |
 
 ---
 
@@ -68,8 +70,8 @@ DSH 生态里已经有几个接 WorkBuddy 的插件，但**没有一个用面板
 插件是纯 JS（没有构建步骤），可以直接以目录形式装进 profile：
 
 ```bash
-# 从本仓库目录安装（link 方式，改代码立刻生效）
-dsh plugin --profile desktop add "link:/Volumes/SSD/Vibe/dsh/dsh-workbuddy-panel"
+# 从本仓库目录安装（link 方式，改代码立刻生效）；把路径换成你 clone 出来的位置
+dsh plugin --profile desktop add "link:$PWD"
 
 # 或者复制到 profile 的 node_modules 下，再手动加进 package.json 的
 # dsh.profile.bundles 与 dependencies
@@ -247,6 +249,32 @@ DSH 启动时，插件的 `webServer` 依赖先就绪、凭据服务（`credenti
 **没有覆盖的**：DSH 自己被暴露到局域网时（宿主把绑定从 `127.0.0.1` 改成 `0.0.0.0`，或者同机反向代理
 把外网请求转进来），外部请求的 `remoteAddress` 也落在回环上，写接口会被放行。这种部署请在反向代理层
 加认证，或者只在本机使用。
+
+---
+
+## 稳定版承诺（1.0）
+
+1.0 之后，下面这些算「公共接口」。要动它们就得发 2.0，并在 CHANGELOG 里写清迁移方式：
+
+- **插件 HTTP 接口**：`/workbuddy-panel/api/` 下 `state`、`config`、`selection`、`bulk`、`enable-new`、
+  `refresh`、`probe`、`test`、`policy`、`dismiss`、`retire`、`clear` 的路径与方法；响应**加字段**算小版本，
+  **删字段或改语义**算大版本。
+- **状态文件**：`~/.dsh/profiles/<profile>/workbuddy-panel.json` 的键名
+  （`panelUrl` / `panelUrls` / `activeUrl` / `apiKeyEnv` / `selection` / `policy` 等）。
+  插件自己会兼容缺失字段，但外部脚本读它就得认这些名字。
+- **cordis 条目 id `workbuddy-panel`**：宿主路由 `/plugins/workbuddy-panel/client.js` 依赖它，
+  所以改名时这个 id 故意没动。
+- **provider 键 `workbuddy2api`**：`agent-default-model` 可能指着它，改了会话就断。
+- **npm 包名 `dsh-workbuddy2api-panel`**。
+
+**不在承诺范围内**（这些跟着上游走，坏了只能跟着修）：
+
+- 面板接口的字段——面板自己改字段，本插件只能跟一个补丁版本；
+- DSH 宿主的插槽名（`settings.section` / `sidebar.footer.action`）——宿主换名字就得跟着换；
+- 界面文案、颜色、排版。
+
+升级就是重新装一遍（插件是 `link:` 装的，改完重启 DSH 生效）；回滚到旧版本同样是改回旧目录后重启。
+想临时停用而不卸载，在 `cordis.patch.yml` 里给它加 `disabled: true`。
 
 ---
 
