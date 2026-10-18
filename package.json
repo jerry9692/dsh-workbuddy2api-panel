@@ -1,0 +1,49 @@
+{
+  "name": "dsh-workbuddy2api-panel",
+  "version": "0.4.1",
+  "description": "workbuddy2api-panel 集成：自动嗅探面板、同步模型（倍率/国内国际分区/思考档位）、实时额度与用量展示",
+  "type": "module",
+  "main": "lib/index.js",
+  "license": "MIT",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "workbuddy2api",
+    "codebuddy",
+    "tencent-workbuddy",
+    "openai-compatible",
+    "credits"
+  ],
+  "scripts": {
+    "test": "node --test \"tests/*.test.mjs\"",
+    "mock": "node scripts/mock-panel.mjs"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-settings"
+      ],
+      "platform": "web"
+    }
+  },
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./client/client.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "client",
+    "scripts",
+    "cordis.patch.yml",
+    "README.md",
+    "REQUIREMENTS.md",
+    "REQUIREMENTS-M2.md",
+    "LICENSE"
+  ]
+}
