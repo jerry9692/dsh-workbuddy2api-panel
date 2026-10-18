@@ -1,7 +1,7 @@
 # dsh-workbuddy2api-panel
 
 [![ci](https://github.com/jerry9692/dsh-workbuddy2api-panel/actions/workflows/ci.yml/badge.svg)](https://github.com/jerry9692/dsh-workbuddy2api-panel/actions/workflows/ci.yml)
-![Version](https://img.shields.io/badge/version-1.0.0-blue)
+[![npm](https://img.shields.io/npm/v/dsh-workbuddy2api-panel.svg)](https://www.npmjs.com/package/dsh-workbuddy2api-panel)
 ![Node](https://img.shields.io/badge/node-20%20%7C%2022%20%7C%2024-brightgreen)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 
@@ -16,7 +16,6 @@
 | 适用面板 | [workbuddy2api-panel](https://github.com/linguo2625469/workbuddy2api-panel) `1.13.0-panel`（实测通过）；接口见下文「依赖的面板接口」，面板改字段这里要跟着改 |
 | 适用 DSH | `@deepseek-ai/dsh-desktop-runtime` `0.2.0-rc.2`（`llm-pi-ai` / `dsh-settings` / `dsh-credentials` 都按这个版本对过） |
 | 与本项目的关系 | 这是个**客户端插件**，不修改、不代理面板本身；它只读面板的 HTTP 接口，把结果写进 DSH 自己的 `llm-pi-ai` 配置 |
-| 当前版本 | `1.0.0`（变更历史见 [CHANGELOG.md](CHANGELOG.md)） |
 
 ---
 
@@ -54,14 +53,14 @@
 
 ## 安装
 
-插件是纯 JS（没有构建步骤），可以直接以目录形式装进 profile：
+```bash
+dsh plugin --profile desktop add dsh-workbuddy2api-panel
+```
+
+改插件代码、想立刻看到效果时，用 link 方式装本地目录（把路径换成你 clone 出来的位置）：
 
 ```bash
-# 从本仓库目录安装（link 方式，改代码立刻生效）；把路径换成你 clone 出来的位置
 dsh plugin --profile desktop add "link:$PWD"
-
-# 或者复制到 profile 的 node_modules 下，再手动加进 package.json 的
-# dsh.profile.bundles 与 dependencies
 ```
 
 `dsh plugin add` 会自动把包名写进 profile 的 `dependencies` 和 `dsh.profile.bundles`，

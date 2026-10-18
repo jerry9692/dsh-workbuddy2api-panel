@@ -28,7 +28,7 @@ DeepSeek Harness：自动嗅探面板、把模型（带倍率、分国内/国际
 ## 安装 / 升级
 
 ```bash
-dsh plugin --profile desktop add link:/path/to/dsh-workbuddy2api-panel
+dsh plugin --profile desktop add dsh-workbuddy2api-panel
 ```
 
 装完重启 DSH，打开 **设置 → WorkBuddy 面板**，填面板地址（如 `http://192.168.1.10:7863`），
