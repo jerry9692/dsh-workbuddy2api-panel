@@ -576,3 +576,53 @@ test('接口路径保留查询串（用量窗口靠它传）', async () => {
     else globalThis.document = realDocument
   }
 })
+
+test('告警按当前语言渲染（服务端只给 key + 参数）', async () => {
+  const zh = {
+    alertLowCreditsTitle: '{realm}额度不足',
+    alertLowCreditsDetail: '剩余 {remaining} 积分（阈值 {threshold}）',
+    realmCn: '国内版',
+    realmGlobal: '国际版',
+    alertJoin: '：',
+  }
+  const en = {
+    alertLowCreditsTitle: 'Low {realm} credits',
+    alertLowCreditsDetail: '{remaining} credits left (threshold {threshold})',
+    realmCn: 'China',
+    realmGlobal: 'Global',
+    alertJoin: ': ',
+  }
+  const render = async (dictionary) => {
+    const snap = sampleSnapshot()
+    snap.alerts = [
+      {
+        key: 'low-credits:cn',
+        level: 'warn',
+        // 中文兜底文案也在，但界面应该优先用词典 + 参数。
+        title: '国内版额度不足',
+        detail: '剩余 30 积分（阈值 50）',
+        titleKey: 'alertLowCreditsTitle',
+        detailKey: 'alertLowCreditsDetail',
+        params: { realm: 'cn', realmLabel: '国内版', remaining: 30, threshold: 50 },
+      },
+    ]
+    // 每份快照都要重新 loadBundle：队列版 React 的 useState 只发一轮。
+    const { exports, ctx, registrations } = await loadBundle([snap, '', '', '', '', '', 72, null])
+    exports.apply(ctx)
+    const element = registrations[0].component({})
+    return flatten(element.type({ ...element.props, t: (key) => dictionary[key] ?? `#${key}` }))
+  }
+
+  const zhText = await render(zh)
+  assert.ok(zhText.includes('国内版额度不足：剩余 30 积分（阈值 50）'), `中文渲染不对：${zhText}`)
+
+  const enText = await render(en)
+  assert.ok(enText.includes('Low China credits: 30 credits left (threshold 50)'), `英文渲染不对：${enText}`)
+  assert.ok(!enText.includes('额度不足'), '英文界面不该出现中文告警')
+})
+
+test('档位 chip 带 aria-pressed，屏幕阅读器能读出选中状态', async () => {
+  const { exports } = await loadBundle()
+  assert.equal(exports.__Chip({ active: true, children: 'high' }).props['aria-pressed'], true)
+  assert.equal(exports.__Chip({ active: false, children: 'low' }).props['aria-pressed'], false)
+})

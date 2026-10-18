@@ -12,6 +12,9 @@ import test from 'node:test'
 import {
   buildRouteModels,
   canonicalJson,
+  computeAlerts,
+  reconcileModels,
+  summarizePackages,
   formatAddressLines,
   parseAddressLines,
   clampEfforts,
@@ -325,4 +328,61 @@ test('formatAddressLines：拼回 textarea 文本', () => {
   assert.equal(formatAddressLines([{ url: 'http://a:7863', timeoutMs: 0 }, { url: 'https://b/wb', timeoutMs: 8000 }]), 'http://a:7863\nhttps://b/wb 8')
   assert.equal(formatAddressLines([]), '')
   assert.equal(formatAddressLines(null), '')
+})
+
+test('summarizePackages：expires_at 为 0 时回落到 end_time', () => {
+  const now = Date.parse('2026-05-01T00:00:00Z')
+  const body = {
+    accounts: [
+      {
+        uid: 'u1',
+        nickname: '主力号',
+        realm: 'cn',
+        remain: 1200,
+        packages: [
+          // 面板把 expires_at 显式给成 0（而不是省略），`??` 不会回落，
+          // 这个包会被当成永不到期而漏掉告警。
+          { name: '月度包', remain: 500, expires_at: 0, end_time: '2026-05-02T12:00:00Z' },
+          { name: '年度包', remain: 700, expires_at: Date.parse('2027-01-01T00:00:00Z') },
+        ],
+      },
+    ],
+  }
+  const summary = summarizePackages(body, now, 3)
+  assert.deepEqual(summary.expiringSoon.map((item) => item.name), ['月度包'])
+  assert.equal(summary.expiringSoon[0].daysLeft, 2)
+  assert.equal(summary.totalRemain, 1200)
+})
+
+test('reconcileModels：removed 只收有定义的模型 id', () => {
+  const now = Date.parse('2026-05-01T00:00:00Z')
+  const previous = {
+    models: [{ id: 'cn:a', name: 'A' }],
+    // lastIds 里留着一个上一轮就没定义过的 id（历史脏数据）。
+    lastIds: ['cn:a', 'cn:ghost'],
+  }
+  const result = reconcileModels([], previous, now, 24 * 3600 * 1000)
+  assert.deepEqual(result.removed, ['cn:a'], '没有定义的 id 不该出现在 removed 里')
+  assert.deepEqual(Object.keys(result.retired), ['cn:a'])
+})
+
+test('computeAlerts 同时给中文兜底和 i18n key + 参数', () => {
+  const now = Date.parse('2026-05-01T00:00:00Z')
+  const alerts = computeAlerts({
+    now,
+    quota: { realms: [{ realm: 'cn', label: '国内版', accounts: 2, credits: 10, creditsTotal: 1000 }] },
+    packages: { expiringSoon: [] },
+    consecutiveFailures: 0,
+    lastError: '',
+    thresholds: { lowCredits: 50, unreachablePolls: 5 },
+    dismissed: {},
+  })
+  const low = alerts.find((item) => item.key === 'low-credits:cn')
+  assert.ok(low !== undefined)
+  assert.equal(low.title, '国内版额度不足', '中文兜底还在（老前端与日志用）')
+  assert.equal(low.titleKey, 'alertLowCreditsTitle')
+  assert.equal(low.detailKey, 'alertLowCreditsDetail')
+  assert.equal(low.params.realm, 'cn')
+  assert.equal(low.params.remaining, 10)
+  assert.equal(low.params.threshold, 100)
 })

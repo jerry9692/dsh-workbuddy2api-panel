@@ -1209,3 +1209,35 @@ test('清除配置必须显式 confirm', async () => {
     await rm(dir, { recursive: true, force: true })
   }
 })
+
+test('状态快照带 ETag，没变化时回 304', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'wbpanel-'))
+  stubPanel()
+  const { ctx, routes } = makeContext(dir)
+  plugin.apply(ctx, {})
+  await tick()
+  const server = await serve(routes[0].handler)
+  try {
+    await postWrite(server.base, '/config', { addresses: 'http://panel.test:7863', refresh: true })
+
+    const first = await realFetch(`${server.base}/state`)
+    const etag = first.headers.get('etag')
+    assert.match(String(etag), /^"[0-9a-f]{16}"$/)
+    const body = await first.json()
+    assert.equal(body.ok, true)
+
+    const second = await realFetch(`${server.base}/state`, { headers: { 'if-none-match': etag } })
+    assert.equal(second.status, 304, '内容没变应该回 304，省掉整包快照')
+    assert.equal(await second.text(), '')
+
+    // 状态一变，ETag 必须跟着变，否则前端会永远停在 304 上。
+    await postWrite(server.base, '/policy', { footerMode: 'remaining' })
+    const third = await realFetch(`${server.base}/state`, { headers: { 'if-none-match': etag } })
+    assert.equal(third.status, 200)
+    assert.notEqual(third.headers.get('etag'), etag)
+    assert.equal((await third.json()).policy.footerMode, 'remaining')
+  } finally {
+    await server.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})

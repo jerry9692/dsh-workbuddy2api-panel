@@ -154,6 +154,23 @@ window.__ModuleLoader__.load({
 			on: '开',
 			off: '关',
 			dismiss: '知道了',
+			imageCap: '图片',
+			panelDefault: '（面板默认）',
+			otherRealm: '其他',
+			justNow: '刚刚',
+			minutesAgo: '{n} 分钟前',
+			hoursAgo: '{n} 小时前',
+			alertJoin: '：',
+			alertAuthTitle: '面板 API Key 失效',
+			alertAuthDetail: '{error}',
+			alertUnreachableTitle: '面板连续不可达',
+			alertUnreachableDetail: '已连续失败 {count} 次：{error}',
+			alertLowCreditsTitle: '{realm}额度不足',
+			alertLowCreditsDetail: '剩余 {remaining} 积分（阈值 {threshold}）',
+			alertExpiryTitle: '积分包即将到期',
+			alertExpiryDetail: '{count} 个包将在 {daysLeft} 天内到期（{account} · {name} 剩 {remain}）',
+			realmCn: '国内版',
+			realmGlobal: '国际版',
 			clearButton: '清除插件写入的配置',
 			clearArmed: '再点一次确认清除（会从 DSH 里移除这条 provider）',
 			clearConfirm: '确认清除？',
@@ -177,6 +194,7 @@ window.__ModuleLoader__.load({
 			lastSync: '上次同步',
 			never: '尚未同步',
 			syncedCount: '已写入 DSH 的模型数',
+			syncPendingHint: '有一轮同步被宿主的配置事务挡住了，正在等待补写；模型可能在下次刷新后出现。',
 			panelVersion: '面板版本',
 			noKey: '缺少 API Key',
 			probeFound: '已找到面板',
@@ -248,6 +266,23 @@ window.__ModuleLoader__.load({
 			on: 'on',
 			off: 'off',
 			dismiss: 'Dismiss',
+			imageCap: 'image',
+			panelDefault: ' (panel default)',
+			otherRealm: 'Other',
+			justNow: 'just now',
+			minutesAgo: '{n} min ago',
+			hoursAgo: '{n} h ago',
+			alertJoin: ': ',
+			alertAuthTitle: 'Panel API key rejected',
+			alertAuthDetail: '{error}',
+			alertUnreachableTitle: 'Panel unreachable',
+			alertUnreachableDetail: 'Failed {count} times in a row: {error}',
+			alertLowCreditsTitle: 'Low {realm} credits',
+			alertLowCreditsDetail: '{remaining} credits left (threshold {threshold})',
+			alertExpiryTitle: 'Credit package expiring',
+			alertExpiryDetail: '{count} package(s) expiring within {daysLeft} days ({account} · {name}, {remain} left)',
+			realmCn: 'China',
+			realmGlobal: 'Global',
 			clearButton: 'Remove config written by this plugin',
 			clearArmed: 'Click again to confirm (removes the provider from DSH)',
 			clearConfirm: 'Confirm removal?',
@@ -271,6 +306,7 @@ window.__ModuleLoader__.load({
 			lastSync: 'Last sync',
 			never: 'never',
 			syncedCount: 'Models written to DSH',
+			syncPendingHint: 'A sync round was blocked by the host config transaction; it will be retried. Models may appear after the next refresh.',
 			panelVersion: 'Panel version',
 			noKey: 'Missing API key',
 			probeFound: 'Panel found',
@@ -329,27 +365,25 @@ window.__ModuleLoader__.load({
 		}
 
 		/**
-		 * 调一次插件接口。
+		 * 发一次请求并把响应解析成 JSON。
 		 * @param path - 接口路径。
-		 * @param body - POST 请求体；省略则 GET。
-		 * @returns 解析后的 JSON。
+		 * @param init - fetch 参数。
+		 * @param options.allow304 - 把 304 视为「没变化」返回 null，而不是错误。
+		 * @param options.onResponse - 拿到响应头就能用的钩子（ETag 要在读 body 前取）。
+		 * @returns 解析后的 JSON；304 且 allow304 时返回 null。
 		 */
-		async function api(path, body) {
-			const init = body === undefined ? { headers: { accept: 'application/json' }, signal: timeoutSignal() } : {
-				method: 'POST',
-				headers: { 'content-type': 'application/json', accept: 'application/json' },
-				body: JSON.stringify(body),
-				signal: timeoutSignal(),
-			}
+		async function requestJson(path, init, options = {}) {
 			let response
 			try {
-				response = await fetch(apiPath(path), init)
+				response = await fetch(apiPath(path), { ...init, signal: timeoutSignal() })
 			} catch (error) {
 				// AbortSignal.timeout 抛的是 TimeoutError，手动 abort 抛 AbortError。
 				const name = error?.name ?? ''
 				if (name === 'TimeoutError' || name === 'AbortError') throw new Error(`接口超时（${API_TIMEOUT_MS / 1000} 秒没有响应）`)
 				throw error
 			}
+			if (typeof options.onResponse === 'function') options.onResponse(response)
+			if (options.allow304 === true && response.status === 304) return null
 			const text = await response.text()
 			let parsed
 			try {
@@ -359,6 +393,43 @@ window.__ModuleLoader__.load({
 			}
 			if (!response.ok) throw new Error(parsed?.error ?? `HTTP ${response.status}`)
 			return parsed
+		}
+
+		/**
+		 * 调一次插件接口。
+		 * @param path - 接口路径。
+		 * @param body - POST 请求体；省略则 GET。
+		 * @returns 解析后的 JSON。
+		 */
+		function api(path, body) {
+			if (body === undefined) return requestJson(path, { headers: { accept: 'application/json' } })
+			return requestJson(path, {
+				method: 'POST',
+				headers: { 'content-type': 'application/json', accept: 'application/json' },
+				body: JSON.stringify(body),
+			})
+		}
+
+		/** 上一次 /state 的 ETag；命中 304 就不用再解析 30KB 的快照。 */
+		let stateEtag = ''
+
+		/**
+		 * 读一次状态快照，内容没变时服务端回 304。
+		 *
+		 * 53 个模型的完整快照约 30KB，15 秒一轮里绝大多数时候什么都没变；
+		 * 带上一次拿到的 ETag，没变化就是一个空响应。
+		 * @returns 快照对象；304 时返回 null。
+		 */
+		async function fetchState() {
+			const headers = { accept: 'application/json' }
+			if (stateEtag !== '') headers['if-none-match'] = stateEtag
+			return requestJson('state', { headers }, {
+				allow304: true,
+				onResponse: (response) => {
+					const etag = typeof response.headers?.get === 'function' ? response.headers.get('etag') : ''
+					if (typeof etag === 'string' && etag !== '') stateEtag = etag
+				},
+			})
 		}
 
 		/** 千分位数字。 */
@@ -405,15 +476,52 @@ window.__ModuleLoader__.load({
 			return num(Math.round(number * 100) / 100)
 		}
 
-		/** 把毫秒时间戳格式化成「刚刚 / x 分钟前 / 时间」。 */
-		function timeAgo(ms) {
+		/**
+		 * 把毫秒时间戳格式化成「刚刚 / x 分钟前 / 时间」。
+		 * @param ms - 时间戳。
+		 * @param t - 翻译函数；不传就退回中文（内部调用点都传）。
+		 * @param locale - 绝对时间的区域设置。
+		 */
+		function timeAgo(ms, t = (key) => key, locale = 'zh-CN') {
 			const value = Number(ms)
 			if (!Number.isFinite(value) || value <= 0) return ''
 			const delta = Date.now() - value
-			if (delta < 60_000) return '刚刚'
-			if (delta < 3_600_000) return `${Math.floor(delta / 60_000)} 分钟前`
-			if (delta < 86_400_000) return `${Math.floor(delta / 3_600_000)} 小时前`
-			return new Date(value).toLocaleString('zh-CN', { hour12: false })
+			if (delta < 60_000) return t('justNow')
+			if (delta < 3_600_000) return String(t('minutesAgo')).replace('{n}', String(Math.floor(delta / 60_000)))
+			if (delta < 86_400_000) return String(t('hoursAgo')).replace('{n}', String(Math.floor(delta / 3_600_000)))
+			return new Date(value).toLocaleString(locale, { hour12: false })
+		}
+
+		/**
+		 * 把服务端告警渲染成当前语言的句子。
+		 *
+		 * 服务端同时给中文文案（老前端与日志用）和 `titleKey`/`detailKey` + `params`；
+		 * 词典里查不到（版本偏斜）就退回中文文案，不至于显示成 key。
+		 * @param alert - computeAlerts 的产物。
+		 * @param t - 翻译函数。
+		 * @returns 一行文本。
+		 */
+		function localizeAlert(alert, t) {
+			const pick = (keyField, textField) => {
+				const key = typeof alert?.[keyField] === 'string' ? alert[keyField] : ''
+				const fallback = typeof alert?.[textField] === 'string' ? alert[textField] : ''
+				if (key === '') return fallback
+				const template = String(t(key))
+				if (template === key) return fallback
+				const params = alert.params ?? {}
+				return template.replace(/\{(\w+)\}/g, (match, name) => {
+					if (name === 'realm') {
+						if (params.realm === 'cn') return String(t('realmCn'))
+						if (params.realm === 'global') return String(t('realmGlobal'))
+						return typeof params.realmLabel === 'string' ? params.realmLabel : match
+					}
+					return params[name] === undefined ? match : String(params[name])
+				})
+			}
+			const title = pick('titleKey', 'title')
+			const detail = pick('detailKey', 'detail')
+			if (detail === '') return title
+			return `${title}${t('alertJoin')}${detail}`
 		}
 
 		/** 上下文窗口的短写：200000 → 200K。 */
@@ -563,13 +671,15 @@ window.__ModuleLoader__.load({
 					title: props.title,
 					disabled: props.disabled === true,
 					onClick: props.onClick,
+					// 屏幕阅读器要知道「当前选中的是哪一个」，纯靠边框颜色不行。
+					'aria-pressed': active,
 					style: {
 						cursor: props.disabled === true ? 'default' : 'pointer',
 						padding: '2px 9px',
 						borderRadius: 999,
 						fontSize: 'var(--dsw-font-xs-12, 12px)',
 						border: `1px solid ${active ? C.success : C.border}`,
-						background: active ? 'transparent' : 'transparent',
+						background: 'transparent',
 						color: active ? C.success : C.tertiary,
 						opacity: props.disabled === true ? 0.5 : 1,
 						lineHeight: 1.6,
@@ -656,10 +766,11 @@ window.__ModuleLoader__.load({
 			const load = react.useCallback(async () => {
 				const mine = seq.current
 				try {
-					const next = await api('state')
+					const next = await fetchState()
 					// 请求发出后用户又提交了操作：这份响应是旧数据，直接丢掉。
 					if (mine !== seq.current) return
-					apply(next)
+					// 304：内容和上次一样，保留现有快照即可。
+					if (next !== null) apply(next)
 					setError('')
 				} catch (failure) {
 					if (alive.current) setError(failure.message)
@@ -679,6 +790,17 @@ window.__ModuleLoader__.load({
 				const timer = setTimeout(() => setNotice(''), 4000)
 				return () => clearTimeout(timer)
 			}, [notice])
+
+			/**
+			 * 「再点一次确认清除」不能一直挂着红框。
+			 *
+			 * 不复位的话，用户过十分钟回来随便点一下，配置就真没了。
+			 */
+			react.useEffect(() => {
+				if (!clearArmed) return undefined
+				const timer = setTimeout(() => setClearArmed(false), 5000)
+				return () => clearTimeout(timer)
+			}, [clearArmed])
 
 			/** 包一层 busy 状态，避免重复点击。 */
 			const run = react.useCallback(async (tag, task) => {
@@ -838,7 +960,7 @@ window.__ModuleLoader__.load({
 									h('span', { style: S.mono }, row.id),
 									row.contextWindow > 0 ? h('span', null, `${t('context')} ${contextText(row.contextWindow)}`) : null,
 									row.maxTokens > 0 ? h('span', null, `max ${contextText(row.maxTokens)}`) : null,
-									row.supportsImages ? h('span', null, '图片') : null,
+									row.supportsImages ? h('span', null, t('imageCap')) : null,
 									row.promoLabel !== '' ? h('span', { style: { color: C.warn } }, row.promoLabel) : null,
 								),
 							),
@@ -859,7 +981,7 @@ window.__ModuleLoader__.load({
 													key: level,
 													active: picked.includes(level),
 													disabled: busy !== '',
-													title: level === row.defaultEffort ? `${level}（面板默认）` : level,
+													title: level === row.defaultEffort ? `${level}${t('panelDefault')}` : level,
 													onClick: () => toggleEffort(row, level),
 												},
 												level,
@@ -923,7 +1045,7 @@ window.__ModuleLoader__.load({
 								color: alert.level === 'error' ? C.danger : C.warn,
 							},
 						},
-						h('span', null, `${alert.title}：${alert.detail}`),
+						h('span', null, localizeAlert(alert, t)),
 						h(Button, { variant: 'ghost', size: 'sm', disabled: busy !== '', onClick: () => dismissAlert(alert.key) }, t('dismiss')),
 					),
 				),
@@ -1002,11 +1124,13 @@ window.__ModuleLoader__.load({
 						? h(
 								'div',
 								{ style: S.muted },
-								`${t('lastSync')}：${timeAgo(snap.lastSyncAt)} · ${t('syncedCount')} ${snap.lastSyncCount}`,
+								`${t('lastSync')}：${timeAgo(snap.lastSyncAt, t)} · ${t('syncedCount')} ${snap.lastSyncCount}`,
 								snap.lastSyncError ? h('span', { style: { color: C.danger } }, ` · ${snap.lastSyncError}`) : null,
 								` · ${t('reloadHint')}`,
 							)
 						: null,
+					// 同步被 HMR 事务挡掉过、还没补写：说清楚「为什么模型列表没变」。
+					snap?.syncPending === true ? h('div', { style: { ...S.muted, color: C.warn } }, t('syncPendingHint')) : null,
 				),
 
 				// —— 额度 ——
@@ -1116,7 +1240,7 @@ window.__ModuleLoader__.load({
 								null,
 								renderGroup(t('cn'), cn),
 								renderGroup(t('global'), globalModels),
-								renderGroup('其他', others),
+								renderGroup(t('otherRealm'), others),
 							),
 				),
 
@@ -1293,6 +1417,8 @@ window.__ModuleLoader__.load({
 			const [open, setOpen] = react.useState(false)
 			const [anchor, setAnchor] = react.useState(null)
 			const alive = react.useRef(true)
+			const popoverRef = react.useRef(null)
+			const buttonRef = react.useRef(null)
 
 			react.useEffect(() => {
 				alive.current = true
@@ -1336,11 +1462,43 @@ window.__ModuleLoader__.load({
 				setOpen(true)
 			}
 
+			/**
+			 * 浮层要能自己关掉：Esc 关闭、点浮层外面关闭。
+			 *
+			 * 只靠「再点一次徽标」在小窗口里很别扭，而且浮层盖在内容上时
+			 * 用户第一反应就是点空白处。
+			 */
+			react.useEffect(() => {
+				if (!open) return undefined
+				if (typeof window === 'undefined' || typeof window.addEventListener !== 'function') return undefined
+				const onKey = (event) => {
+					if (event?.key === 'Escape') setOpen(false)
+				}
+				const onPointer = (event) => {
+					const inside = (ref) => {
+						const node = ref.current
+						return node !== null && typeof node?.contains === 'function' && node.contains(event?.target)
+					}
+					// 点徽标自身交给 onClick 处理（否则会「关了又开」）。
+					if (inside(popoverRef) || inside(buttonRef)) return
+					setOpen(false)
+				}
+				window.addEventListener('keydown', onKey)
+				window.addEventListener('pointerdown', onPointer, true)
+				return () => {
+					window.removeEventListener('keydown', onKey)
+					window.removeEventListener('pointerdown', onPointer, true)
+				}
+			}, [open])
+
 			const popover =
 				open && anchor !== null && typeof window !== 'undefined'
 					? h(
 							'div',
 							{
+								ref: popoverRef,
+								role: 'dialog',
+								'aria-label': t('footerLabel'),
 								style: {
 									position: 'fixed',
 									left: Math.max(8, anchor.left),
@@ -1382,8 +1540,10 @@ window.__ModuleLoader__.load({
 				h(
 					'button',
 					{
+						ref: buttonRef,
 						type: 'button',
 						onClick: toggle,
+						'aria-expanded': open,
 						title: `${t('footerLabel')}${text === '' ? '' : ` · ${text}`}`,
 						style: {
 							display: 'flex',
@@ -1492,6 +1652,8 @@ window.__ModuleLoader__.load({
 		exports.__store = store
 		// 供测试用：用量窗口是走查询串传的，这里单独暴露出来做断言。
 		exports.__apiPath = apiPath
+		// 供测试用：Chip 在假 React 里不会被调用，只能直接调它验可访问性属性。
+		exports.__Chip = Chip
 		exports.apply = apply
 		exports.inject = ['slots', 'locale']
 		return module.exports

@@ -2,6 +2,49 @@
 
 版本号跟 `package.json` 走；每条只写「用户能感知的行为变化」和「会咬人的坑」。
 
+## 0.5.1
+
+0.5.0 之后的收尾：不再有安全问题，都是「看得见的粗糙」和性能。
+
+### 性能
+
+- `/state` 支持 ETag：内容没变回 304，前端带 `if-none-match`。53 个模型的快照约 30KB，
+  15 秒一轮的轮询里绝大多数时候什么都没变，现在这一轮只是一个空响应。
+  顺带的好处是「没变化就不重渲染」，原先计划的 `React.memo` 因此不再必要。
+
+### 国际化
+
+- 告警文案改由服务端给 `titleKey`/`detailKey` + `params`，前端按当前语言渲染；
+  服务端仍保留中文 `title`/`detail` 作为兜底（老前端、日志、测试都在用）。
+- 剩余硬编码中文清掉：相对时间（刚刚 / x 分钟前）、模型分组「其他」、
+  档位的「（面板默认）」、图片能力标签。
+- 仍按原样显示的是**数据**：模型名、账号昵称、面板返回的错误原文——翻译它们反而是错的。
+
+### 交互与可访问性
+
+- 侧边栏浮层支持 Esc 关闭、点浮层外面关闭，补 `role="dialog"` / `aria-label`；
+  徽标按钮补 `aria-expanded`。
+- 「再点一次确认清除」的红框 5 秒后自动复位（以前会一直挂着，下次误点直接删配置）。
+- 档位/窗口 chip 补 `aria-pressed`，去掉一个 `active ? 'transparent' : 'transparent'` 的死三元。
+- 「同步被宿主配置事务挡住」现在会在设置页显示一行提示（`syncPending` 以前是死字段）。
+
+### 修复
+
+- `summarizePackages`：面板把 `expires_at` 给成 `0` 时回落到字符串 `end_time`，
+  否则这类积分包会被当成永不到期而漏掉告警。
+- `reconcileModels`：`removed` 只收有模型定义的 id，不再出现「谁都没见过」的 id。
+- 修两处挂错位置的 JSDoc（`lib/panel.js` 的 `probeCandidates`、`lib/index.js` 的 `errorText`）。
+- 前端 `requestJson` 抽出公共请求逻辑，`fetchState` 复用，不再两份超时/非 JSON 处理。
+- 快照不再返回 `selection`（与 `models[].enabled`/`efforts` 重复）、`packages`、`usageFetchedAt`
+  （前端从未读取）。
+
+### 测试
+
+- 60 → 66：告警 i18n 中英双语渲染、chip `aria-pressed`、`expires_at: 0` 回落、
+  `removed` 只收有定义的 id、`computeAlerts` 的 key + 参数，以及**之前漏掉的**
+  `summarizePackages` / `reconcileModels` 边界。三条新的 `lib/panel.js` 用例
+  在修复前的代码上确认会失败。
+
 ## 0.5.0
 
 一次以「审计 → 修复」为主线的版本，核心是把写接口的安全边界补齐。
