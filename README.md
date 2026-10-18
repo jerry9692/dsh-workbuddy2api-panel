@@ -16,24 +16,7 @@
 | 适用面板 | [workbuddy2api-panel](https://github.com/linguo2625469/workbuddy2api-panel) `1.13.0-panel`（实测通过）；接口见下文「依赖的面板接口」，面板改字段这里要跟着改 |
 | 适用 DSH | `@deepseek-ai/dsh-desktop-runtime` `0.2.0-rc.2`（`llm-pi-ai` / `dsh-settings` / `dsh-credentials` 都按这个版本对过） |
 | 与本项目的关系 | 这是个**客户端插件**，不修改、不代理面板本身；它只读面板的 HTTP 接口，把结果写进 DSH 自己的 `llm-pi-ai` 配置 |
-| 当前版本 | `1.0.0`（首个稳定版，变更历史见 [CHANGELOG.md](CHANGELOG.md)，兼容范围见下文「版本策略」） |
-
----
-
-## 和相似的插件怎么选
-
-DSH 生态里接 WorkBuddy 的插件有两类做法：
-
-- **只读 `/v1/models`**（例如 `wdmb123/dsh-workbuddy2api-panel-bridge`、`tearslee/dsh-workbuddy2api`）：
-  把 OpenAI 兼容端点注册成 provider，负责模型导入、元数据、思考档位，有的还托管网关进程。
-  不需要访问面板，更轻。
-- **读面板管理接口 `/panel/api/*`**（本插件）：因此能拿到 `/v1/models` 里没有的东西——倍率、
-  国内/国际分区额度、用量与积分、告警、账号健康度、下架宽限、面板版本。代价是必须能访问面板，
-  面板改字段时要跟着改。
-
-两者不冲突：只在 DSH 里用模型、不需要看额度，前一类更省事；要看倍率和剩余积分才需要这个。
-
-> 这里只描述两类做法的差异，不评价具体项目；竞品情况截至 2026-10，可能已经变化。
+| 当前版本 | `1.0.0`（变更历史见 [CHANGELOG.md](CHANGELOG.md)） |
 
 ---
 
@@ -64,6 +47,9 @@ DSH 生态里接 WorkBuddy 的插件有两类做法：
 3. 面板加/删模型，插件每 2 分钟自动同步一次，**不需要重启 DSH**；
 4. 同一页里能看每个账号剩多少积分、哪些号在冷却、72 小时内的请求数/积分消耗/缓存命中。
 
+前提是插件所在机器能访问面板。如果你只想要一个 OpenAI 兼容的 `/v1` 端点、不需要倍率和额度这些信息，
+那用更轻的桥接方式就够了，这个插件是多余的。
+
 ---
 
 ## 安装
@@ -89,6 +75,8 @@ dsh plugin --profile desktop add "link:$PWD"
 ```bash
 dsh plugin --profile desktop remove dsh-workbuddy2api-panel
 ```
+
+只想临时停用、不卸载的话，在 `cordis.patch.yml` 里给它加一行 `disabled: true`，重启后生效。
 
 ---
 
@@ -253,26 +241,12 @@ DSH 启动时，插件的 `webServer` 依赖先就绪、凭据服务（`credenti
 
 ---
 
-## 版本策略
-
-遵循 [语义化版本](https://semver.org/lang/zh-CN/)。1.x 期间下面这些不会变：
-
-- provider 键 `workbuddy2api`（`agent-default-model` 可能指着它）、cordis 条目 id `workbuddy-panel`
-  （宿主路由 `/plugins/workbuddy-panel/client.js` 依赖它）、npm 包名；
-- 状态文件 `workbuddy-panel.json` 的键名；
-- 插件的 HTTP 接口路径与方法——只会加字段，不会删改已有的。
-
-破坏以上任何一条就发 2.0。面板接口本身不在此列：上游改字段时，本插件只能跟一个补丁版本。
-
-升级就是重新装一遍（`link:` 装的，改完重启 DSH 生效）；回滚同样是改回旧目录后重启。
-想临时停用而不卸载，在 `cordis.patch.yml` 里给它加 `disabled: true`。
-
----
-
 ## 已知限制
 
 - 插件路由不在宿主鉴权之后，写接口靠「回环 + 同源 + JSON」三道闸兜底（见上一节）；
   只读接口对本机开放，不返回任何密钥。
+- provider 键固定是 `workbuddy2api`，状态文件固定是 `workbuddy-panel.json`：这两个名字要是改了，
+  指向它的默认模型会失效、面板地址也会被忘掉，所以不会动。
 - 插件只写 llm-pi-ai 的 `providers.workbuddy2api` 这一条路由，不动 `agent-default-model`。
   如果你把默认模型设成了面板上已删除的模型，DSH 那边会报模型不存在——插件不会替你改默认模型。
 - 面板的 `promo_factor` / `promo_label` 只做展示，不参与倍率计算（真实倍率以 `promo_credits` 为准）。
