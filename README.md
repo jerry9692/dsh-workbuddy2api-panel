@@ -16,23 +16,24 @@
 | 适用面板 | [workbuddy2api-panel](https://github.com/linguo2625469/workbuddy2api-panel) `1.13.0-panel`（实测通过）；接口见下文「依赖的面板接口」，面板改字段这里要跟着改 |
 | 适用 DSH | `@deepseek-ai/dsh-desktop-runtime` `0.2.0-rc.2`（`llm-pi-ai` / `dsh-settings` / `dsh-credentials` 都按这个版本对过） |
 | 与本项目的关系 | 这是个**客户端插件**，不修改、不代理面板本身；它只读面板的 HTTP 接口，把结果写进 DSH 自己的 `llm-pi-ai` 配置 |
-| 当前版本 | `1.0.0`（首个稳定版，变更历史见 [CHANGELOG.md](CHANGELOG.md)，兼容承诺见下文「稳定版承诺」） |
+| 当前版本 | `1.0.0`（首个稳定版，变更历史见 [CHANGELOG.md](CHANGELOG.md)，兼容范围见下文「版本策略」） |
 
 ---
 
-## 和已有 WorkBuddy 插件的区别
+## 和相似的插件怎么选
 
-DSH 生态里已经有几个接 WorkBuddy 的插件，但**没有一个用面板的管理接口**（对两个主要竞品的宿主源码
-`grep -c "panel/api"` 都是 0，它们只读 OpenAI 兼容的 `/v1/models`）：
+DSH 生态里接 WorkBuddy 的插件有两类做法：
 
-| 插件 | 做法 | 有 | 没有 |
-| --- | --- | --- | --- |
-| `wdmb123/dsh-workbuddy2api-panel-bridge` | 薄的 `/v1` 桥，把 `127.0.0.1:7863/v1` 注册成 provider | 模型导入、元数据、思考档位、每模型开关、免重启 | 倍率、分区额度、用量、告警、多地址、子路径 |
-| `tearslee/dsh-workbuddy2api` | 托管本地网关进程（自动拉起/回收） | 进程生命周期、模型目录同步、管理命令 | 同上；且假设网关在本机 |
-| npm `dsh-workbuddy2api`（FireOpalus） | 自己实现账号池，直接读本机登录 | 多号轮换、熔断、签到 | 不用面板；等于把面板的活重做一遍 |
+- **只读 `/v1/models`**（例如 `wdmb123/dsh-workbuddy2api-panel-bridge`、`tearslee/dsh-workbuddy2api`）：
+  把 OpenAI 兼容端点注册成 provider，负责模型导入、元数据、思考档位，有的还托管网关进程。
+  不需要访问面板，更轻。
+- **读面板管理接口 `/panel/api/*`**（本插件）：因此能拿到 `/v1/models` 里没有的东西——倍率、
+  国内/国际分区额度、用量与积分、告警、账号健康度、下架宽限、面板版本。代价是必须能访问面板，
+  面板改字段时要跟着改。
 
-本插件的差异点全部来自 `/panel/api/*`：**倍率写进模型名**、国内/国际分区额度、
-用量与积分统计、告警、下架宽限、面板版本。这些字段 `/v1/models` 里没有。
+两者不冲突：只在 DSH 里用模型、不需要看额度，前一类更省事；要看倍率和剩余积分才需要这个。
+
+> 这里只描述两类做法的差异，不评价具体项目；竞品情况截至 2026-10，可能已经变化。
 
 ---
 
@@ -252,28 +253,18 @@ DSH 启动时，插件的 `webServer` 依赖先就绪、凭据服务（`credenti
 
 ---
 
-## 稳定版承诺（1.0）
+## 版本策略
 
-1.0 之后，下面这些算「公共接口」。要动它们就得发 2.0，并在 CHANGELOG 里写清迁移方式：
+遵循 [语义化版本](https://semver.org/lang/zh-CN/)。1.x 期间下面这些不会变：
 
-- **插件 HTTP 接口**：`/workbuddy-panel/api/` 下 `state`、`config`、`selection`、`bulk`、`enable-new`、
-  `refresh`、`probe`、`test`、`policy`、`dismiss`、`retire`、`clear` 的路径与方法；响应**加字段**算小版本，
-  **删字段或改语义**算大版本。
-- **状态文件**：`~/.dsh/profiles/<profile>/workbuddy-panel.json` 的键名
-  （`panelUrl` / `panelUrls` / `activeUrl` / `apiKeyEnv` / `selection` / `policy` 等）。
-  插件自己会兼容缺失字段，但外部脚本读它就得认这些名字。
-- **cordis 条目 id `workbuddy-panel`**：宿主路由 `/plugins/workbuddy-panel/client.js` 依赖它，
-  所以改名时这个 id 故意没动。
-- **provider 键 `workbuddy2api`**：`agent-default-model` 可能指着它，改了会话就断。
-- **npm 包名 `dsh-workbuddy2api-panel`**。
+- provider 键 `workbuddy2api`（`agent-default-model` 可能指着它）、cordis 条目 id `workbuddy-panel`
+  （宿主路由 `/plugins/workbuddy-panel/client.js` 依赖它）、npm 包名；
+- 状态文件 `workbuddy-panel.json` 的键名；
+- 插件的 HTTP 接口路径与方法——只会加字段，不会删改已有的。
 
-**不在承诺范围内**（这些跟着上游走，坏了只能跟着修）：
+破坏以上任何一条就发 2.0。面板接口本身不在此列：上游改字段时，本插件只能跟一个补丁版本。
 
-- 面板接口的字段——面板自己改字段，本插件只能跟一个补丁版本；
-- DSH 宿主的插槽名（`settings.section` / `sidebar.footer.action`）——宿主换名字就得跟着换；
-- 界面文案、颜色、排版。
-
-升级就是重新装一遍（插件是 `link:` 装的，改完重启 DSH 生效）；回滚到旧版本同样是改回旧目录后重启。
+升级就是重新装一遍（`link:` 装的，改完重启 DSH 生效）；回滚同样是改回旧目录后重启。
 想临时停用而不卸载，在 `cordis.patch.yml` 里给它加 `disabled: true`。
 
 ---
@@ -328,6 +319,10 @@ curl http://127.0.0.1:7863/mock/state                                           
 node --test
 ```
 
+需求与取舍记录放在 [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md)（一期）与
+[docs/REQUIREMENTS-M2.md](docs/REQUIREMENTS-M2.md)（M2/M3），是历史文档：行为以 README 与代码为准。
+逐版本变化见 [CHANGELOG.md](CHANGELOG.md)。
+
 - `lib/panel.js` —— 纯函数层（URL 归一、面板条目 → DSH 模型档案、额度/用量/积分包归一、下架对齐、告警计算），测试覆盖最厚；
 - `lib/index.js` —— 宿主插件（轮询、写 llm-pi-ai 配置、HTTP 接口）；
 - `client/client.js` —— 设置页卡片（ModuleLoader 格式，运行时 `require('react')` 与 ui-primitives）。
@@ -344,5 +339,7 @@ lib/panel.js          纯函数层
 lib/index.js          宿主插件入口
 client/client.js      设置页前端
 tests/                panel / host / client 三组测试
-REQUIREMENTS.md       最初的需求文档（含取舍记录）
+docs/REQUIREMENTS.md      一期需求与取舍（历史文档）
+docs/REQUIREMENTS-M2.md   M2/M3 需求（历史文档）
+docs/release-1.0.0.md     1.0.0 的 Release 正文
 ```

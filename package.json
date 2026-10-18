@@ -42,11 +42,8 @@
     "scripts",
     "cordis.patch.yml",
     "README.md",
-    "REQUIREMENTS.md",
-    "REQUIREMENTS-M2.md",
     "LICENSE",
-    "CHANGELOG.md",
-    "docs"
+    "CHANGELOG.md"
   ],
   "engines": {
     "node": ">=20"
