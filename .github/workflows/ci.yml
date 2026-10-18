@@ -10,11 +10,13 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        node: [20, 22]
+        node: [20, 22, 24]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
       # 插件本身零依赖：不需要 pnpm/npm install。
-      - run: node --test "tests/*.test.mjs"
+      # 不能写 glob 也不能写目录：Node 20 的 --test 不展开通配符（报 Could not find），
+      # Node 22 会把目录当成文件（MODULE_NOT_FOUND）。不带参数让测试运行器自己发现。
+      - run: node --test

@@ -5,7 +5,7 @@
  * 和 host.test.mjs 的区别：那边 stub 掉 fetch，只测逻辑；这边测的是
  * 真 HTTP、真 JSON、真状态文件，能抓到「字段名对不上」这类问题。
  *
- * 运行：node --test "tests/*.test.mjs"
+ * 运行：node --test（在插件根目录，自动发现 tests/*.test.mjs）
  */
 
 import assert from 'node:assert/strict'

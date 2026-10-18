@@ -8,7 +8,7 @@
  *   - API Key 永远不出现在返回给前端的 JSON 里；
  *   - 面板 401 时给出可读错误而不是抛异常。
  *
- * 运行：node --test "tests/*.test.mjs"
+ * 运行：node --test（在插件根目录，自动发现 tests/*.test.mjs）
  */
 
 import assert from 'node:assert/strict'

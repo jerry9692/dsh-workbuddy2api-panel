@@ -266,7 +266,7 @@ curl http://127.0.0.1:7863/mock/state                                           
 
 ```bash
 # 全部测试（44 个，无第三方依赖）
-node --test "tests/*.test.mjs"
+node --test
 ```
 
 - `lib/panel.js` —— 纯函数层（URL 归一、面板条目 → DSH 模型档案、额度/用量/积分包归一、下架对齐、告警计算），测试覆盖最厚；

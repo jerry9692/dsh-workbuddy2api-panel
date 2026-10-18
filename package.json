@@ -15,7 +15,7 @@
     "credits"
   ],
   "scripts": {
-    "test": "node --test \"tests/*.test.mjs\"",
+    "test": "node --test",
     "mock": "node scripts/mock-panel.mjs"
   },
   "dsh": {

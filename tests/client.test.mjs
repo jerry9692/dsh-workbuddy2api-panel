@@ -5,7 +5,7 @@
  * 检查 ModuleLoader 契约（id / exports）、插槽注册参数，以及组件能否在
  * 「没有任何数据」和「有完整数据」两种状态下渲染而不炸。
  *
- * 运行：node --test "tests/*.test.mjs"
+ * 运行：node --test（在插件根目录，自动发现 tests/*.test.mjs）
  */
 
 import assert from 'node:assert/strict'
