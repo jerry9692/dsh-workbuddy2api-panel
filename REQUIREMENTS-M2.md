@@ -235,6 +235,9 @@
 
 ## 已实现清单（v0.3.0 / M3）
 
+> 版本号现状：这些条目随 v0.3.0 落地，后续 v0.4.x 只做徽标显示方式，**v0.5.0 是审计修复版**
+> （4 条 P0 + 10 条 P1，见 `CHANGELOG.md`），没有再新增功能条目。
+
 | 条目 | 实现位置 | 验收方式 |
 | --- | --- | --- |
 | M3-1 侧边栏徽标 | 客户端 `WorkBuddyFooter`，挂 `sidebar.footer.action`（id `workbuddy-quota`，order 50） | `tests/client.test.mjs`「侧边栏徽标：宽窄两种形态都能渲染」 |

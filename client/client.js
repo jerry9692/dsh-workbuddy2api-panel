@@ -50,19 +50,34 @@ window.__ModuleLoader__.load({
 		const Button =
 			primitives.Button ??
 			((props) =>
-				h('button', { type: 'button', disabled: props.disabled, onClick: props.onClick }, props.children))
+				h(
+					'button',
+					{
+						type: 'button',
+						disabled: props.disabled,
+						onClick: props.onClick,
+						// 降级版也要透传 style/aria-label：清除按钮的红色警示、模型勾选
+						// 的可访问名都靠它们，丢了是「看起来正常但少了防护」。
+						style: props.style,
+						title: props.title,
+						'aria-label': props['aria-label'],
+					},
+					props.children,
+				))
 		const Checkbox =
 			primitives.Checkbox ??
 			((props) =>
 				h(
 					'label',
-					{},
+					{ title: props.title, style: props.style },
 					h('input', {
 						type: 'checkbox',
 						checked: Boolean(props.checked),
+						disabled: props.disabled,
+						'aria-label': props['aria-label'],
 						onChange: () => props.onChange?.(!props.checked),
 					}),
-					props.label,
+					props.label ?? props.children,
 				))
 		const Switch =
 			primitives.Switch ??
@@ -294,7 +309,23 @@ window.__ModuleLoader__.load({
 		 * @returns 可直接 fetch 的路径。
 		 */
 		function apiPath(path) {
-			return new URL(`workbuddy-panel/api/${path.replace(/^\/+/, '')}`, document.baseURI).pathname
+			const url = new URL(`workbuddy-panel/api/${path.replace(/^\/+/, '')}`, document.baseURI)
+			// 只取 pathname 会把 `?hours=24` 丢掉：用量窗口就是靠查询串传的，
+			// 丢了之后后端会回退到默认 72 小时，界面上却还写着 24h。
+			return `${url.pathname}${url.search}`
+		}
+
+		/** 单次接口调用的超时。挂死的请求会让 busy 永远不复位。 */
+		const API_TIMEOUT_MS = 15000
+
+		/** 超时用的 signal；老浏览器不支持就返回 undefined（此时只能靠网络自己超时）。 */
+		function timeoutSignal(ms = API_TIMEOUT_MS) {
+			try {
+				if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') return AbortSignal.timeout(ms)
+			} catch {
+				// 忽略：没有 AbortSignal.timeout 的环境继续跑。
+			}
+			return undefined
 		}
 
 		/**
@@ -304,12 +335,21 @@ window.__ModuleLoader__.load({
 		 * @returns 解析后的 JSON。
 		 */
 		async function api(path, body) {
-			const init = body === undefined ? { headers: { accept: 'application/json' } } : {
+			const init = body === undefined ? { headers: { accept: 'application/json' }, signal: timeoutSignal() } : {
 				method: 'POST',
 				headers: { 'content-type': 'application/json', accept: 'application/json' },
 				body: JSON.stringify(body),
+				signal: timeoutSignal(),
 			}
-			const response = await fetch(apiPath(path), init)
+			let response
+			try {
+				response = await fetch(apiPath(path), init)
+			} catch (error) {
+				// AbortSignal.timeout 抛的是 TimeoutError，手动 abort 抛 AbortError。
+				const name = error?.name ?? ''
+				if (name === 'TimeoutError' || name === 'AbortError') throw new Error(`接口超时（${API_TIMEOUT_MS / 1000} 秒没有响应）`)
+				throw error
+			}
 			const text = await response.text()
 			let parsed
 			try {
@@ -570,6 +610,8 @@ window.__ModuleLoader__.load({
 			const [probe, setProbe] = react.useState(null)
 			const [clearArmed, setClearArmed] = react.useState(false)
 			const alive = react.useRef(true)
+			/** 快照序号：轮询结果回来时用它判断自己是否已经过期。 */
+			const seq = react.useRef(0)
 
 			react.useEffect(() => {
 				alive.current = true
@@ -602,6 +644,9 @@ window.__ModuleLoader__.load({
 
 			const apply = react.useCallback((next) => {
 				if (!alive.current || next === null || typeof next !== 'object') return
+				// 序号 +1：还在路上的轮询请求回来时会发现自己已经过期，不会拿旧快照
+				// 盖掉刚提交的勾选/策略（这是「勾了又弹回去」的根因）。
+				seq.current += 1
 				setSnap(next)
 				// 广播给侧边栏徽标：改完显示方式不该等下一轮轮询。
 				store.set(next)
@@ -609,8 +654,11 @@ window.__ModuleLoader__.load({
 			}, [])
 
 			const load = react.useCallback(async () => {
+				const mine = seq.current
 				try {
 					const next = await api('state')
+					// 请求发出后用户又提交了操作：这份响应是旧数据，直接丢掉。
+					if (mine !== seq.current) return
 					apply(next)
 					setError('')
 				} catch (failure) {
@@ -624,6 +672,13 @@ window.__ModuleLoader__.load({
 				const timer = setInterval(load, 15_000)
 				return () => clearInterval(timer)
 			}, [load])
+
+			/** 成功提示自动消失，别一直挂在页面上。 */
+			react.useEffect(() => {
+				if (notice === '') return undefined
+				const timer = setTimeout(() => setNotice(''), 4000)
+				return () => clearTimeout(timer)
+			}, [notice])
 
 			/** 包一层 busy 状态，避免重复点击。 */
 			const run = react.useCallback(async (tag, task) => {
@@ -683,16 +738,21 @@ window.__ModuleLoader__.load({
 			const toggleEffort = (row, level) => {
 				const current = row.selectedEfforts ?? row.efforts
 				const next = current.includes(level) ? current.filter((item) => item !== level) : [...current, level]
-				// 全选时回传 null 语义：清掉显式裁剪，交给面板的完整档位。
-				const efforts = next.length === 0 ? [level] : next
+				// 空数组 = 不裁剪（用面板声明的全部档位），不是「回滚到刚才那档」。
 				return run(`effort:${row.id}`, async () => {
-					apply(await api('selection', { id: row.id, efforts }))
+					apply(await api('selection', { id: row.id, efforts: next }))
 				})
 			}
 
 			const bulk = (enabled) =>
 				run('bulk', async () => {
 					apply(await api('bulk', { enabled }))
+				})
+
+			/** 只启用面板新增的模型，不动用户手动关掉的那些。 */
+			const enableNew = () =>
+				run('enable-new', async () => {
+					apply(await api('enable-new', {}))
 				})
 
 			const setPolicy = (patch) =>
@@ -727,14 +787,20 @@ window.__ModuleLoader__.load({
 			}
 
 			const connected = snap !== null && (snap.models?.length ?? 0) > 0
-			const models = snap?.models ?? []
+			// 字段缺失就补默认值：版本偏斜（新前端 + 老插件）时少一个数组不该整块白屏。
+			const models = Array.isArray(snap?.models) ? snap.models : []
 			const cn = models.filter((row) => row.realm === 'cn')
 			const globalModels = models.filter((row) => row.realm === 'global')
 			const others = models.filter((row) => row.realm !== 'cn' && row.realm !== 'global')
 			// snap 还没到（首次加载）时 quota/usage 是 undefined，统一成 null，
 			// 否则下面 `quota === null` 的分支判断会漏掉。
 			const quota = snap?.quota ?? null
+			const realms = Array.isArray(quota?.realms) ? quota.realms : []
+			const quotaTotal = quota?.total ?? null
 			const usage = snap?.usage ?? null
+			const usageTotals = usage?.totals ?? null
+			const usageByModel = Array.isArray(usage?.byModel) ? usage.byModel : []
+			const alerts = Array.isArray(snap?.alerts) ? snap.alerts : []
 
 			/** 渲染一组模型。 */
 			const renderGroup = (title, rows) => {
@@ -758,6 +824,7 @@ window.__ModuleLoader__.load({
 							},
 							h(Checkbox, {
 								checked: row.enabled,
+								disabled: busy !== '',
 								onChange: (checked) => toggleModel(row, checked),
 								'aria-label': row.displayName,
 							}),
@@ -836,8 +903,12 @@ window.__ModuleLoader__.load({
 					? h('div', { style: { ...S.banner, border: `1px solid ${C.danger}`, color: C.danger } }, `${t('error')}：${error}`)
 					: null,
 
+				notice !== ''
+					? h('div', { style: { ...S.banner, border: `1px solid ${C.border}`, color: C.label } }, notice)
+					: null,
+
 				// —— 告警（Key 失效 / 面板不可达 / 额度见底 / 积分包到期）——
-				(snap?.alerts ?? []).map((alert) =>
+				alerts.map((alert) =>
 					h(
 						'div',
 						{
@@ -951,7 +1022,7 @@ window.__ModuleLoader__.load({
 								h(
 									'div',
 									{ style: S.stats },
-									quota.realms.map((realm) =>
+									realms.map((realm) =>
 										h(Stat, {
 											key: realm.realm,
 											label: realm.label,
@@ -961,23 +1032,23 @@ window.__ModuleLoader__.load({
 									),
 									h(Stat, {
 										label: t('accounts'),
-										value: String(quota.total.accounts),
-										hint: `${quota.total.healthy} ${t('healthy')} / ${quota.total.cooling} ${t('cooling')}`,
-										color: quota.total.healthy === 0 ? C.warn : C.label,
+										value: String(quotaTotal?.accounts ?? 0),
+										hint: `${quotaTotal?.healthy ?? 0} ${t('healthy')} / ${quotaTotal?.cooling ?? 0} ${t('cooling')}`,
+										color: (quotaTotal?.healthy ?? 0) === 0 ? C.warn : C.label,
 									}),
 									usage === null
 										? null
 										: h(Stat, {
 												label: `${t('requests')} · ${hours}h`,
-												value: num(usage.totals.requests),
-												hint: `${t('creditsUsed')} ${shortNum(usage.totals.credits)}`,
+												value: num(usageTotals?.requests),
+												hint: `${t('creditsUsed')} ${shortNum(usageTotals?.credits)}`,
 											}),
 									usage === null
 										? null
 										: h(Stat, {
 												label: t('cacheHit'),
-												value: `${Math.round((usage.totals.cacheHitRate || 0) * 100)}%`,
-												hint: `${t('latency')} ${Math.round(usage.totals.avgLatencyMs || 0)}ms`,
+												value: `${Math.round((usageTotals?.cacheHitRate || 0) * 100)}%`,
+												hint: `${t('latency')} ${Math.round(usageTotals?.avgLatencyMs || 0)}ms`,
 											}),
 								),
 								snap?.accounts?.length > 0
@@ -1035,7 +1106,7 @@ window.__ModuleLoader__.load({
 									},
 								},
 								h('span', null, `${t('newModels')} +${snap.newModels.length} · ${t('newModelsHint')}`),
-								h(Button, { variant: 'outline', size: 'sm', disabled: busy !== '', onClick: () => bulk(true) }, t('enableAllNew')),
+								h(Button, { variant: 'outline', size: 'sm', disabled: busy !== '', onClick: enableNew }, t('enableAllNew')),
 							)
 						: null,
 					models.length === 0
@@ -1050,7 +1121,7 @@ window.__ModuleLoader__.load({
 				),
 
 				// —— 用量 ——
-				usage === null || usage.byModel.length === 0
+				usageByModel.length === 0
 					? null
 					: h(
 							'div',
@@ -1071,9 +1142,17 @@ window.__ModuleLoader__.load({
 												disabled: busy !== '',
 												onClick: () =>
 													run('usage', async () => {
-														setHours(value)
 														const result = await api(`usage?hours=${value}`)
-														if (alive.current && snap !== null) setSnap({ ...snap, usage: result.usage })
+														// 函数式更新：await 期间轮询或别的操作可能已经换过 snapshot，
+														// 用闭包里的旧 snap 做 spread 会把它们覆盖回去。
+														if (!alive.current) return
+														setHours(value)
+														setSnap((current) => {
+															if (current === null) return current
+															const next = { ...current, usage: result.usage }
+															store.set(next)
+															return next
+														})
 													}),
 											},
 											`${value}h`,
@@ -1099,7 +1178,7 @@ window.__ModuleLoader__.load({
 								h(
 									'tbody',
 									null,
-									usage.byModel.map((row) =>
+									usageByModel.map((row) =>
 										h(
 											'tr',
 											{ key: row.key },
@@ -1343,51 +1422,76 @@ window.__ModuleLoader__.load({
 		 * 挂载设置页分区。
 		 * @param ctx - 客户端上下文。
 		 */
-		function apply(ctx) {
+		/**
+		 * 注册一块 UI；失败只影响这一块，不牵连其它块。
+		 * @param ctx - 客户端上下文。
+		 * @param label - effect 名字（也是日志里的标识）。
+		 * @param factory - effect 工厂。
+		 */
+		function safeEffect(ctx, label, factory) {
 			try {
-				const t = ctx.locale.bind(NS)
-				ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'workbuddy-panel: dictionaries')
-				ctx.effect(
-					() =>
-						ctx.slots.inject('settings.section', () =>
-							ctx.slots.register(
-								{
-									name: 'settings.section',
-									id: 'workbuddy',
-									order: 45,
-									label: () => t('nav'),
-									locale: NS,
-									inject: () => ({ t }),
-								},
-								(ownerProps = {}) => h(WorkBuddyPanel, { ...ownerProps, t }),
-							),
-						),
-					'workbuddy-panel: settings section',
-				)
-				ctx.effect(
-					() =>
-						ctx.slots.inject('sidebar.footer.action', () =>
-							ctx.slots.register(
-								{
-									name: 'sidebar.footer.action',
-									id: 'workbuddy-quota',
-									order: 50,
-									label: () => t('footerLabel'),
-								},
-								(ownerProps = {}) => h(WorkBuddyFooter, { ...ownerProps, t }),
-							),
-						),
-					'workbuddy-panel: sidebar footer',
-				)
+				ctx.effect(factory, label)
 			} catch (error) {
-				// 挂载失败最多是「设置页少一块」，绝不能让宿主其它插件跟着挂掉。
-				console.error('[dsh-workbuddy2api-panel] 设置页挂载失败', error)
+				console.error(`[dsh-workbuddy2api-panel] ${label} 注册失败`, error)
 			}
+		}
+
+		/**
+		 * 挂载设置页分区 + 侧边栏徽标。
+		 *
+		 * 三块各自独立注册：语言包或设置页注册失败，徽标也要照常出现
+		 * （反过来也一样），否则一个插槽的接口变化会带走整个插件。
+		 * @param ctx - 客户端上下文。
+		 */
+		function apply(ctx) {
+			let t = (key) => key
+			try {
+				t = ctx.locale.bind(NS)
+				ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'workbuddy-panel: dictionaries')
+			} catch (error) {
+				console.error('[dsh-workbuddy2api-panel] 语言包注册失败，改用原始 key', error)
+			}
+			safeEffect(
+				ctx,
+				'workbuddy-panel: settings section',
+				() =>
+					ctx.slots.inject('settings.section', () =>
+						ctx.slots.register(
+							{
+								name: 'settings.section',
+								id: 'workbuddy',
+								order: 45,
+								label: () => t('nav'),
+								locale: NS,
+								inject: () => ({ t }),
+							},
+							(ownerProps = {}) => h(WorkBuddyPanel, { ...ownerProps, t }),
+						),
+					),
+			)
+			safeEffect(
+				ctx,
+				'workbuddy-panel: sidebar footer',
+				() =>
+					ctx.slots.inject('sidebar.footer.action', () =>
+						ctx.slots.register(
+							{
+								name: 'sidebar.footer.action',
+								id: 'workbuddy-quota',
+								order: 50,
+								label: () => t('footerLabel'),
+							},
+							(ownerProps = {}) => h(WorkBuddyFooter, { ...ownerProps, t }),
+						),
+					),
+			)
 		}
 
 		exports.NS = NS
 		// 供测试用：验证「设置页改完 → 徽标立刻变」这条链路。
 		exports.__store = store
+		// 供测试用：用量窗口是走查询串传的，这里单独暴露出来做断言。
+		exports.__apiPath = apiPath
 		exports.apply = apply
 		exports.inject = ['slots', 'locale']
 		return module.exports

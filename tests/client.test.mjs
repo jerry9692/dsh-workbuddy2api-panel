@@ -561,3 +561,18 @@ test('侧边栏徽标：hidden 时不渲染任何东西', async () => {
   const element = registrations[1].component({ wide: true })
   assert.equal(element.type(element.props), null)
 })
+
+test('接口路径保留查询串（用量窗口靠它传）', async () => {
+  const { exports } = await loadBundle()
+  const realDocument = globalThis.document
+  globalThis.document = { baseURI: 'http://127.0.0.1:19387/settings' }
+  try {
+    // 只取 pathname 会把 ?hours=24 丢掉，后端回退到默认 72 小时，
+    // 界面上却还写着 24h —— 数字和标签对不上。
+    assert.equal(exports.__apiPath('usage?hours=24'), '/workbuddy-panel/api/usage?hours=24')
+    assert.equal(exports.__apiPath('/state'), '/workbuddy-panel/api/state')
+  } finally {
+    if (realDocument === undefined) delete globalThis.document
+    else globalThis.document = realDocument
+  }
+})

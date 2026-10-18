@@ -12,6 +12,7 @@
  */
 
 import assert from 'node:assert/strict'
+import { statSync } from 'node:fs'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
@@ -106,6 +107,8 @@ function stubPanel(options = {}) {
     if (Array.isArray(options.failHosts) && options.failHosts.includes(url.hostname)) {
       throw new TypeError('fetch failed: connect ECONNREFUSED')
     }
+    // 观察面板实际收到了哪些请求（用来断言「切换地址之后请求真的换了主机」）。
+    if (typeof options.onRequest === 'function') options.onRequest(url)
     const status = options.status ?? 200
     if (status !== 200) return new Response('{"error":"invalid_api_key","ok":false}', { status })
     // 模拟真实面板：没带 Bearer 就 401（auth_required=true 的默认行为）。
@@ -197,6 +200,7 @@ async function serve(handler) {
   const { port } = server.address()
   return {
     base: `http://127.0.0.1:${port}/workbuddy-panel/api`,
+    origin: `http://127.0.0.1:${port}`,
     close: () => new Promise((resolve) => server.close(resolve)),
   }
 }
@@ -918,5 +922,290 @@ test('所有地址都连不上时保存地址再报错', async () => {
     await server.close()
     await rm(dir, { recursive: true, force: true })
     globalThis.fetch = realFetch
+  }
+})
+
+/**
+ * 发一个写请求。默认带同源 Origin + application/json（和浏览器里插件自己发的一致），
+ * 个别用例会显式覆盖成跨站请求。
+ */
+function postWrite(base, path, body, headers = {}) {
+  return realFetch(`${base}${path}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...headers },
+    body: JSON.stringify(body),
+  })
+}
+
+test('跨站页面发起的写请求被拒绝，配置不受影响', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'wbpanel-'))
+  stubPanel()
+  const { ctx, routes, mutations } = makeContext(dir)
+  plugin.apply(ctx, {})
+  await tick()
+  const server = await serve(routes[0].handler)
+  try {
+    // 浏览器里的「简单请求」：text/plain + 外站 Origin，不会触发预检。
+    // 这正是漏洞原形——不拦它，任何网页都能改面板地址。
+    const simple = await realFetch(`${server.base}/config`, {
+      method: 'POST',
+      headers: { 'content-type': 'text/plain', origin: 'https://evil.example' },
+      body: JSON.stringify({ addresses: 'http://evil.example:7863', refresh: true }),
+    })
+    assert.equal(simple.status, 403, 'text/plain 的跨站请求必须被拒绝')
+
+    const crossSite = await realFetch(`${server.base}/config`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: 'https://evil.example', 'sec-fetch-site': 'cross-site' },
+      body: JSON.stringify({ addresses: 'http://evil.example:7863', refresh: true }),
+    })
+    assert.equal(crossSite.status, 403, 'Origin 不匹配的写请求必须被拒绝')
+
+    const clear = await realFetch(`${server.base}/clear`, {
+      method: 'POST',
+      headers: { 'content-type': 'text/plain', origin: 'https://evil.example' },
+      body: JSON.stringify({ confirm: true }),
+    })
+    assert.equal(clear.status, 403, '清除配置也不能被跨站驱动')
+
+    assert.equal(mutations.length, 0, '被拒绝的请求不该写任何配置')
+    const state = await (await realFetch(`${server.base}/state`)).json()
+    assert.equal(state.panelUrl, '', '面板地址不该被跨站请求改掉')
+
+    // 同源页面照常可用（插件自己是这么发的）。
+    const same = await postWrite(server.base, '/config', { addresses: 'http://panel.test:7863', refresh: true }, {
+      origin: server.origin,
+      'sec-fetch-site': 'same-origin',
+    })
+    assert.equal(same.status, 200)
+    assert.equal((await same.json()).baseUrl, 'http://panel.test:7863')
+  } finally {
+    await server.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('清除配置后彻底断开：地址清空、刷新也不会把模型拉回来', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'wbpanel-'))
+  stubPanel()
+  const { ctx, routes } = makeContext(dir)
+  plugin.apply(ctx, {})
+  await tick()
+  const server = await serve(routes[0].handler)
+  try {
+    const before = await (await postWrite(server.base, '/config', { addresses: 'http://panel.test:7863', refresh: true })).json()
+    assert.equal(before.models.length, 2)
+
+    const cleared = await (await postWrite(server.base, '/clear', { confirm: true })).json()
+    assert.equal(cleared.baseUrl, '')
+    assert.equal(cleared.models.length, 0)
+    assert.deepEqual(cleared.addresses, [])
+
+    const refreshed = await (await postWrite(server.base, '/refresh', {})).json()
+    assert.equal(refreshed.baseUrl, '', '清除后不能还连着旧面板')
+    assert.equal(refreshed.models.length, 0, '清除后刷新不该把模型重新拉回来')
+
+    const saved = JSON.parse(await readFile(join(dir, 'workbuddy-panel.json'), 'utf8'))
+    assert.equal(saved.panelUrl, '')
+    assert.equal(saved.activeUrl, '')
+    assert.deepEqual(saved.panelUrls, [], '地址列表也要清掉，否则下一轮轮询又会连回去')
+  } finally {
+    await server.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('嗅探到新地址后真的切过去，后续请求打到新主机', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'wbpanel-'))
+  const hosts = []
+  stubPanel({ onRequest: (url) => hosts.push(url.host) })
+  const { ctx, routes } = makeContext(dir)
+  plugin.apply(ctx, {})
+  await tick()
+  const server = await serve(routes[0].handler)
+  try {
+    await postWrite(server.base, '/config', { addresses: 'http://panel.test:7863', refresh: true })
+    const probed = await (await postWrite(server.base, '/probe', { candidates: ['http://second.test:7863'] })).json()
+    assert.equal(probed.found, true)
+    assert.equal(probed.url, 'http://second.test:7863')
+
+    const state = await (await realFetch(`${server.base}/state`)).json()
+    assert.equal(state.activeUrl, 'http://second.test:7863', '找到地址后当前地址必须跟着切换')
+    assert.ok(state.addresses.some((entry) => entry.url === 'http://second.test:7863' && entry.active === true))
+
+    hosts.length = 0
+    const refreshed = await (await postWrite(server.base, '/refresh', {})).json()
+    assert.ok(hosts.length > 0, '刷新应该真的发请求')
+    assert.ok(hosts.every((host) => host === 'second.test:7863'), `刷新应打新地址，实际打到 ${hosts.join(',')}`)
+    assert.equal(refreshed.baseUrl, 'http://second.test:7863')
+  } finally {
+    await server.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('关掉自动同步也会把模型基准落盘（重启后不会全当新模型）', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'wbpanel-'))
+  stubPanel()
+  const { ctx, routes } = makeContext(dir)
+  plugin.apply(ctx, {})
+  await tick()
+  const server = await serve(routes[0].handler)
+  try {
+    await postWrite(server.base, '/config', { addresses: 'http://panel.test:7863', sync: false, refresh: true })
+    const saved = JSON.parse(await readFile(join(dir, 'workbuddy-panel.json'), 'utf8'))
+    assert.equal(saved.sync, false)
+    assert.deepEqual(saved.lastModelIds, ['cn:deepseek-v4.1-flash', 'global:gpt-6-astra'])
+    assert.equal(saved.panelVersion, '1.13.0-panel')
+  } finally {
+    await server.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('数据没变时不重复写状态文件', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'wbpanel-'))
+  stubPanel()
+  const { ctx, routes } = makeContext(dir)
+  plugin.apply(ctx, {})
+  await tick()
+  const server = await serve(routes[0].handler)
+  try {
+    await postWrite(server.base, '/config', { addresses: 'http://panel.test:7863', refresh: true })
+    const file = join(dir, 'workbuddy-panel.json')
+    const before = statSync(file).mtimeMs
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    await postWrite(server.base, '/refresh', {})
+    await postWrite(server.base, '/refresh', {})
+    assert.equal(statSync(file).mtimeMs, before, '内容没变就不该写盘')
+  } finally {
+    await server.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('只启用面板新增的模型，不动用户手动关掉的', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'wbpanel-'))
+  stubPanel()
+  const { ctx, routes } = makeContext(dir)
+  plugin.apply(ctx, {})
+  await tick()
+  const server = await serve(routes[0].handler)
+  try {
+    await postWrite(server.base, '/config', { addresses: 'http://panel.test:7863', refresh: true })
+    await postWrite(server.base, '/selection', { id: 'global:gpt-6-astra', enabled: false })
+    await postWrite(server.base, '/policy', { newModelPolicy: 'ignore' })
+
+    // 面板上新上架一个模型：按 ignore 策略它默认不勾选，进「新模型」列表。
+    stubPanel({
+      models: {
+        ok: true,
+        models: [
+          ...PANEL_MODELS.models,
+          { id: 'cn:brand-new', name: 'Brand New', credits: 'x2', supported_efforts: ['high'], supports_reasoning: true },
+        ],
+      },
+    })
+    await postWrite(server.base, '/refresh', { sync: true })
+
+    const state = await (await realFetch(`${server.base}/state`)).json()
+    assert.deepEqual(state.newModels, ['cn:brand-new'])
+    const enabledOf = new Map(state.models.map((row) => [row.id, row.enabled]))
+    assert.equal(enabledOf.get('cn:brand-new'), false)
+    assert.equal(enabledOf.get('global:gpt-6-astra'), false)
+
+    const after = await (await postWrite(server.base, '/enable-new', {})).json()
+    const rows = new Map(after.models.map((row) => [row.id, row.enabled]))
+    assert.equal(rows.get('cn:brand-new'), true, '新模型应被启用')
+    assert.equal(rows.get('global:gpt-6-astra'), false, '用户手动关掉的模型不该被打开')
+    assert.deepEqual(after.newModels, [])
+  } finally {
+    await server.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+/**
+ * 直接调 handler 的假请求/响应：真实服务器只能从 127.0.0.1 发起，
+ * 「非本机来源」和 415 这类分支只能在这里构造。
+ */
+function fakeExchange(options = {}) {
+  const response = {
+    status: 0,
+    payload: null,
+    writeHead(status) {
+      this.status = status
+    },
+    end(text) {
+      this.payload = JSON.parse(text)
+    },
+  }
+  const body = options.body ?? ''
+  const request = {
+    url: options.url ?? '/workbuddy-panel/api/config',
+    method: options.method ?? 'POST',
+    headers: options.headers ?? {},
+    socket: { remoteAddress: options.remoteAddress ?? '127.0.0.1' },
+    async *[Symbol.asyncIterator]() {
+      if (body !== '') yield Buffer.from(body)
+    },
+  }
+  return { request, response }
+}
+
+test('非本机来源的写请求被拒绝', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'wbpanel-'))
+  stubPanel()
+  const { ctx, routes, mutations } = makeContext(dir)
+  plugin.apply(ctx, {})
+  await tick()
+  try {
+    const { request, response } = fakeExchange({ remoteAddress: '10.1.2.3', headers: { 'content-type': 'application/json' }, body: '{"addresses":"http://evil.test:7863"}' })
+    await routes[0].handler(request, response)
+    assert.equal(response.status, 403)
+    assert.match(response.payload.error, /只允许本机/)
+    assert.equal(mutations.length, 0)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('同源但 content-type 不是 JSON 时返回 415', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'wbpanel-'))
+  stubPanel()
+  const { ctx, routes, mutations } = makeContext(dir)
+  plugin.apply(ctx, {})
+  await tick()
+  try {
+    const { request, response } = fakeExchange({
+      headers: { host: '127.0.0.1:9', origin: 'http://127.0.0.1:9', 'content-type': 'text/plain' },
+      body: '{"addresses":"http://panel.test:7863"}',
+    })
+    await routes[0].handler(request, response)
+    assert.equal(response.status, 415)
+    assert.match(response.payload.error, /application\/json/)
+    assert.equal(mutations.length, 0)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('清除配置必须显式 confirm', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'wbpanel-'))
+  stubPanel()
+  const { ctx, routes } = makeContext(dir)
+  plugin.apply(ctx, {})
+  await tick()
+  try {
+    const { request, response } = fakeExchange({
+      url: '/workbuddy-panel/api/clear',
+      headers: { host: '127.0.0.1:9', origin: 'http://127.0.0.1:9', 'content-type': 'application/json' },
+      body: '{}',
+    })
+    await routes[0].handler(request, response)
+    assert.equal(response.status, 400)
+    assert.match(response.payload.error, /confirm/)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
   }
 })
