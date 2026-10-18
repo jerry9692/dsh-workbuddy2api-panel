@@ -1,5 +1,9 @@
 # dsh-workbuddy2api-panel
 
+[![ci](https://github.com/jerry9692/dsh-workbuddy2api-panel/actions/workflows/ci.yml/badge.svg)](https://github.com/jerry9692/dsh-workbuddy2api-panel/actions/workflows/ci.yml)
+![Node](https://img.shields.io/badge/node-20%20%7C%2022%20%7C%2024-brightgreen)
+![License](https://img.shields.io/badge/license-MIT-blue)
+
 把 [workbuddy2api-panel](https://github.com/linguo2625469/workbuddy2api-panel) 接进 DeepSeek Harness：
 自动嗅探面板地址、把面板上的模型同步成 DSH 的模型（带倍率、分国内/国际、可裁剪思考档位），
 并在设置页里实时显示剩余额度与模型用量。
