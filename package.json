@@ -1,6 +1,6 @@
 {
   "name": "dsh-workbuddy2api-panel",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "workbuddy2api-panel 集成：自动嗅探面板、同步模型（倍率/国内国际分区/思考档位）、实时额度与用量展示",
   "type": "module",
   "main": "lib/index.js",

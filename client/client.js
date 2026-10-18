@@ -414,6 +414,15 @@ window.__ModuleLoader__.load({
 		let stateEtag = ''
 
 		/**
+		 * 上一次 /state 的完整快照，专门配 ETag 用。
+		 *
+		 * 只记 ETag 不记内容的话，304 就只是一个「没有数据」的空响应：
+		 * 设置页关掉再打开时组件是新的、snap 是 null，这一轮 304 就让它
+		 * 一直停在「连接中…」，直到下一次内容变化或手动点刷新。
+		 */
+		let stateBody = null
+
+		/**
 		 * 读一次状态快照，内容没变时服务端回 304。
 		 *
 		 * 53 个模型的完整快照约 30KB，15 秒一轮里绝大多数时候什么都没变；
@@ -423,13 +432,17 @@ window.__ModuleLoader__.load({
 		async function fetchState() {
 			const headers = { accept: 'application/json' }
 			if (stateEtag !== '') headers['if-none-match'] = stateEtag
-			return requestJson('state', { headers }, {
+			const next = await requestJson('state', { headers }, {
 				allow304: true,
 				onResponse: (response) => {
 					const etag = typeof response.headers?.get === 'function' ? response.headers.get('etag') : ''
 					if (typeof etag === 'string' && etag !== '') stateEtag = etag
 				},
 			})
+			// 304：服务端说「和你上次那份一样」，那就把上次那份还回去。
+			if (next === null) return stateBody
+			stateBody = next
+			return next
 		}
 
 		/** 千分位数字。 */
@@ -710,7 +723,9 @@ window.__ModuleLoader__.load({
 		 */
 		function WorkBuddyPanel(props) {
 			const { t } = props
-			const [snap, setSnap] = react.useState(null)
+			// 侧边栏徽标通常先于设置页拉到快照，先拿它渲染，避免每次打开设置
+			// 都先闪一下「连接中…」。
+			const [snap, setSnap] = react.useState(store.get())
 			const [error, setError] = react.useState('')
 			const [notice, setNotice] = react.useState('')
 			const [busy, setBusy] = react.useState('')

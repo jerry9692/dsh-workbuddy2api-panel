@@ -626,3 +626,71 @@ test('档位 chip 带 aria-pressed，屏幕阅读器能读出选中状态', asyn
   assert.equal(exports.__Chip({ active: true, children: 'high' }).props['aria-pressed'], true)
   assert.equal(exports.__Chip({ active: false, children: 'low' }).props['aria-pressed'], false)
 })
+
+test('关掉设置页再打开：服务端回 304 也要显示已连接，不能停在「连接中…」', async () => {
+  const react = makeStatefulReact()
+  const snap = sampleSnapshot()
+  const realDocument = globalThis.document
+  globalThis.document = { baseURI: 'http://127.0.0.1:19387/' }
+  const calls = []
+  globalThis.fetch = async (url, init) => {
+    calls.push(init?.headers?.['if-none-match'] ?? '')
+    if (init?.headers?.['if-none-match'] === '"v1"') {
+      return new Response(null, { status: 304, headers: { etag: '"v1"' } })
+    }
+    return new Response(JSON.stringify(snap), {
+      status: 200,
+      headers: { 'content-type': 'application/json', etag: '"v1"' },
+    })
+  }
+  let second = null
+  try {
+    const { exports, ctx, registrations } = await loadBundle([], react)
+    exports.apply(ctx)
+
+    // 第一次打开设置页：拿到完整快照。
+    const firstWrapper = registrations[0].component({})
+    const first = react.__mount(firstWrapper.type, firstWrapper.props)
+    await tick(5)
+    assert.ok(flatten(first.tree).includes('已连接'), `第一次应已连接，实际：${flatten(first.tree)}`)
+    for (const cleanup of first.cleanups) cleanup()
+
+    // 关掉再打开：组件是新的（snap 初始为 null），这次服务端回 304。
+    exports.__store.set(null)
+    const secondWrapper = registrations[0].component({})
+    second = react.__mount(secondWrapper.type, secondWrapper.props)
+    await tick(5)
+    const text = flatten(second.tree)
+    assert.ok(calls.includes('"v1"'), '第二次请求应带上 if-none-match，这样才算真的复现了 304 这条路径')
+    assert.ok(text.includes('已连接'), `304 时应沿用上次的快照，实际：${text}`)
+    assert.ok(!text.includes('连接中'), '不该再显示连接中')
+  } finally {
+    for (const cleanup of second?.cleanups ?? []) cleanup()
+    delete globalThis.fetch
+    globalThis.document = realDocument
+  }
+})
+
+test('打开设置页时先用徽标已拿到的快照渲染，不闪「连接中…」', async () => {
+  const react = makeStatefulReact()
+  const snap = sampleSnapshot()
+  const realDocument = globalThis.document
+  globalThis.document = { baseURI: 'http://127.0.0.1:19387/' }
+  // 请求挂着不返回：这时候能不能显示已连接，全靠 store 里的那份。
+  globalThis.fetch = () => new Promise(() => {})
+  let panel = null
+  try {
+    const { exports, ctx, registrations } = await loadBundle([], react)
+    exports.apply(ctx)
+    exports.__store.set(snap)
+    const wrapper = registrations[0].component({})
+    panel = react.__mount(wrapper.type, wrapper.props)
+    const text = flatten(panel.tree)
+    assert.ok(text.includes('已连接'), `挂载当帧就该显示已连接，实际：${text}`)
+    assert.ok(!text.includes('连接中'), '不该闪连接中')
+  } finally {
+    for (const cleanup of panel?.cleanups ?? []) cleanup()
+    delete globalThis.fetch
+    globalThis.document = realDocument
+  }
+})
